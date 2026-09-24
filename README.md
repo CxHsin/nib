@@ -1,28 +1,140 @@
 # nib
 
-使用 Python 和 DeepSeek API 从零实现的终端个人 agent，参考 HKUDS/nanobot 逐步学习开发。
+nib 是一个运行在本地的个人 agent bot。它通过 NapCat 接收指定 QQ 群中所有成员的消息，每天北京时间 20:00 启动一次 pi agent：agent 自主查询本期消息、按需读取公开网页、筛选关注主题并生成晚报，最后由程序发送到 Telegram 私聊。
 
-## 当前功能
+当前关注主题是 agent 开发，以及 AI 产品发布与体验、产品设计、用户需求和商业化案例。普通闲聊、购物推荐和广告不收录。
 
-- 多轮对话与工具调用循环，每条用户消息最多请求模型 5 次。
-- 列出 `notes` 当前层的 Markdown 文件，读取并根据正文回答。
-- 读取前校验路径边界；工具错误作为结果返回模型。
-- 启动时加载会话，输入 `exit` 时保存。
-- 使用 `/prefs` 查看偏好、`/set 键 值` 设置偏好、`/del 键` 删除偏好。
+也支持在指定群里 @nib 对话：仅 `QQ_OWNER_ID` 对应的主人可以触发。pi agent 自主决定直接回答、查询本群已保存消息或读取直接链接，最后由程序回复原群。
 
-## 运行（PowerShell，Python 3.10+）
+## 数据流与边界
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-$secret = Read-Host "输入 DeepSeek API Key" -AsSecureString
-$env:DEEPSEEK_API_KEY = [System.Net.NetworkCredential]::new("", $secret).Password
-Remove-Variable secret
-.\.venv\Scripts\python.exe main.py
+```text
+NapCat / OneBot 群消息
+        ↓ 程序校验群号、QQ 号
+    SQLite（本地）
+        ↓ 北京时间每日 20:00
+ pi agent（查询消息 ↔ 按需读取直接链接）
+        ↓ 程序校验引用与输出格式
+ Telegram 私聊晚报
 ```
 
-把 UTF-8 编码的 `.md` 笔记放在 `notes` 目录中，然后输入“请列出我的笔记”或“请读取 test.md 并总结”。读取的正文会发送给模型服务。
+程序掌管权限、时间窗口、持久化和投递；agent 决定查看哪些候选消息、读取哪些直接链接、哪些内容属于主题，以及如何合并和摘要。agent 没有 Shell、写文件或任意网络工具。
 
-会话保存在 `session.json`，偏好保存在 `preferences.json`。这些个人数据、笔记、环境配置和本地学习记录均不提交到仓库。
+消息和网页正文保留 7 天，生成的晚报最多保留一周。第一版不补取启动前或停机期间的 QQ 历史；晚报会标明检测到的记录缺口。
 
-当前是学习原型：仅正常输入 `exit` 时保存会话，尚未处理网络故障、损坏的数据文件或历史长度限制。
+
+## 运行要求
+
+- Node.js 22.19 或更高版本。
+- 已安装并登录的 NapCat，启用 OneBot 正向 WebSocket。
+- DeepSeek API Key。
+- Telegram bot token，以及与你私聊对应的 chat ID。
+
+## 配置
+
+推荐在项目根目录打开 Git Bash，运行交互式配置向导：
+
+```bash
+bash scripts/setup.sh
+```
+
+向导会依次引导 NapCat、QQ 白名单、DeepSeek 和 Telegram 配置，将结果写入被 Git 忽略的 `.env`，最后运行类型检查和测试。密钥输入不会显示在终端。重复运行时会先检测 `.env`：已有必需参数的阶段自动跳过，不会再次打开网页或询问；需要修改时直接编辑 `.env` 后重跑即可。向导会在运行 npm 前检查 Git Bash 是否能找到 Node.js。
+
+如果希望手动配置，请安装依赖并复制配置模板：
+
+```powershell
+npm install
+Copy-Item .env.example .env
+```
+
+编辑 `.env`：
+
+- `NAPCAT_WS_URL`：NapCat 正向 WebSocket 地址。
+- `NAPCAT_ACCESS_TOKEN`：若 NapCat 配置了访问令牌则填写。
+- `QQ_GROUP_IDS`：允许接收的群号，多个用英文逗号分隔。
+- `QQ_OWNER_ID`：你自己的 QQ 号，只填一个；独立于晚报全体成员。留空时关闭 @ 对话，晚报仍运行。
+- `QQ_GROUP_NAMES`：可选的群号到群名 JSON 映射。
+- `DEEPSEEK_API_KEY`：模型服务密钥。
+- `TELEGRAM_BOT_TOKEN`：Telegram bot token。
+- `TELEGRAM_CHAT_ID`：发送晚报的私聊 chat ID。
+
+`.env`、本地数据库和个人消息均已排除在 Git 提交之外。不要把 token 或 API Key 写入源码。
+
+## 开发与启动
+
+现在可以用一个命令启动 NapCat 和 nib：
+
+```powershell
+npm run start-all
+```
+
+脚本会先检查 `NAPCAT_WS_URL` 对应端口；NapCat 已运行时直接复用，否则启动 `D:\Code\NapCat\launcher.bat`，等待 WebSocket 就绪后再启动 nib。若以后移动 NapCat，可在 `.env` 设置 `NAPCAT_LAUNCHER_BAT` 覆盖默认路径。关闭 nib 时按 `Ctrl+C`；NapCat/QQ 是否退出由其自己的启动窗口控制。
+
+```powershell
+npm run check
+npm test
+npm run dev
+```
+
+如果要立刻测试一次，不必等到 20:00：在另一个终端运行 `npm run send-now`。它读取已经保存的消息，生成并发送一份临时晚报，不会启动第二个 NapCat 监听；正式的每日晚报仍按北京时间 20:00 运行。
+
+程序需要持续运行才能接收消息并在 20:00 准时发送。首次启动从启动时刻开始记录；如果当天 20:00 之前启动，首份晚报只覆盖启动后到 20:00 的内容。
+
+生产式运行可以先构建：
+
+```powershell
+npm run build
+npm start
+```
+
+数据默认保存在 `data/nib.sqlite`。遇到 NapCat 断线会自动重连；晚报生成或 Telegram 投递失败会自动重试。网络超时使投递结果无法确认时，系统优先保证送达，因此偶尔可能出现重复分段。
+
+## QQ 群内对话
+
+NapCat 的消息格式需设为 `array`。配置 `QQ_OWNER_ID` 后，关闭旧 nib 进程，再执行 `npm run start-all`。看到 `[QQ 对话] 已启用，仅指定主人可 @ 触发` 后，在 `QQ_GROUP_IDS` 中的群里通过 QQ 的成员选择功能真正 @ 机器人：
+
+- `@nib 我的项目叫 nib，请记住这次对话。`
+- `@nib 我的项目叫什么？`
+- `@nib 查一下本群保存的 agent 相关消息。`
+- `@nib 读一下 https://example.com ，告诉我网页讲什么。`
+
+每次追问都需要 @。文字里手打“@nib”、@全体、私聊、其他成员和非白名单群不会触发。只处理文本与其中的直接链接；图片、语音和引用消息正文暂不解析。聊天请求同时保存为群记录与对话上下文；机器人自己的回复也不收录。
+
+消息查询仅限本群已保存的全体成员消息，按关键词返回最近 50 条；不会补取完整 QQ 历史。读网页只允许当前请求、最近用户对话或本次查询结果直接出现的链接。程序发送最终文本，模型没有发送到任意群的工具。
+
+请求串行处理，最多容纳 5 个处理中或排队请求；满队列时忽略新请求。单次最多 8 轮模型请求、`MAX_AGENT_TOOL_CALLS` 次工具调用，90 秒后取消。重复消息不重复回答，5 分钟前的事件不作为新的触发。QQ 发送失败或回执不明时不自动重发，可重新 @ 重试。模型或工具失败会在群里给出简短提示，终端记录故障类别；402 表示模型账户余额不足。
+
+详细边界和验收见 [QQ 对话需求](docs/qq-chat-spec.md)。
+
+## 晚报格式
+
+每条收录内容包括：
+
+- 主题摘要
+- 关键原话
+- 链接（原消息无链接时省略）
+- 发言人
+- 群
+- 时间
+
+只有链接且网页无法读取、无法依据群消息判断主题的内容，放入“待读取链接”。没有符合条件的内容时仍发送空晚报。
+
+## 当前验证状态
+
+类型检查、构建和离线自动化测试已覆盖时间边界、消息白名单、链接提取、存储幂等、agent 输出引用校验、晚报字段和 Telegram 分段。真实 NapCat、DeepSeek 与 Telegram 联调需要填入个人配置后完成，尚不能记为用户验收通过。
+
+2026-09-24：新增 QQ 对话后，构建与 16 项离线测试通过，涵盖权限、持久化上下文、去重、群和链接范围、SDK 工具循环、预算停止及 OneBot 回执。经授权发送的两条真实 QQ 诊断消息均获得成功回执；DeepSeek 返回 402（余额不足），真实 @ 对话的模型回答仍待账户可用后验证。
+
+## 最新采集与保留规则（2026-09-24）
+
+指定群所有成员的运行期间新消息都会采集，旧 QQ_AUTHOR_IDS 配置不再生效；仍不补取停机历史、不下载音视频。晚报继续筛选 agent 开发及产品主题，仅主人可 @ 触发对话。
+
+本地群消息、对话、网页缓存、晚报和投递正文最多保留七天。启动时及每分钟清理；过期对话和群消息查询立即排除。派生回答继承已使用来源的最早到期时间，晚报按窗口起点计算七天期限，因此部分派生内容会提前删除。已有对话缺少来源时间，迁移时保守按本会话最早消息计算到期。停机时无法执行清理，下次启动先清理。QQ、Telegram 和模型服务端副本不由本地清理删除。
+
+## 回复风格与长消息
+
+nib 是主人的个人 QQ 助手，默认自然简短：问候只回一句，普通问题 1～3 句话，明确要求详细时再展开。回答超过 100 个 Unicode 字符（含标点、空白，表情按码点计）使用一张合并转发卡片；100 字及以内直接引用回复。合并转发节点署名 nib，使用机器人自身 QQ 号。发送失败不自动降级重复发长文本。
+
+## TinyFish 搜索
+
+配置 TINYFISH_API_KEY 后，主人可 @nib 请求搜索公开信息。web_search 返回最多 5 条标题、链接、摘要，并允许 read_link 读取本次搜索结果链接；摘要不代表已阅读正文。搜索查询会发送给 TinyFish，默认不持久化搜索结果。沿用工具预算、取消和一周对话保留规则。此集成直接使用 SDK，不加载开发助手的 MCP、Shell 或浏览器操作工具。
